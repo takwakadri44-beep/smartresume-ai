@@ -1,3 +1,4 @@
+
 import re
 
 import fitz  # PyMuPDF
@@ -14,10 +15,29 @@ st.set_page_config(page_title="SmartResume AI", page_icon="📄", layout="wide")
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 STOP = set(
-    """a an the and or of to in on for with by at from as is are be this that
-    these those your you we our their its it will can etc
-    le la les un une des du de d l et ou en dans sur pour avec par au aux ce
-    cette ces votre vos nous notre leur son sa ses est sont être""".split()
+    """a an the and or of to in on for with by at from as is are be been being this that
+    these those your you we our their its it will can may must should would could also such
+    than then so into onto over under between among within without across about per via
+    both either neither each other any all some more most many much very well etc ie eg who
+    whom which what when where why how not no nor if else while during after before up down
+    have has had do does using use used like them they he she his her s
+    le la les un une des du de d l et ou en dans sur pour avec par au aux ce cette ces votre
+    vos nous notre leur leurs son sa ses est sont être ainsi comme plus très aussi sans sous
+    entre chez vers qui que quoi dont où""".split()
+)
+
+GENERIC = set(
+    """strong solid good great excellent best better new nice key main various several
+    multiple real experience experiences knowledge understanding ability abilities skills
+    skill proficiency familiarity required preferred working work works related closely
+    including include includes team role looking join responsibilities responsibility
+    qualifications qualification degree years year build evaluate develop write deploy
+    collect clean present track monitor design analyze extract solve ensure contribute
+    manage create implement maintain perform provide support help need needs able
+    communication autonomous curious summary profile education languages projects interests
+    references title job description fields field problems problem
+    compétences compétence connaissance connaissances expérience maîtrise bonne bon
+    capacité formation profil langues projets""".split()
 )
 
 st.markdown(
@@ -52,35 +72,57 @@ def clean(text):
 
 # ---------- Phase 3 : dynamic skill extraction (no dictionary) ----------
 def extract_phrases(text):
-    """Candidate phrases: short segments + n-grams, filtered by stopwords."""
+    """RAKE-style: split segments at stopwords, trim generic words,
+    keep single words only if they look technical."""
     segments = re.split(r"[\n\r,;:•|/()\[\]]+|\s-\s|\.\s", text)
     found = []
     for seg in segments:
-        words = re.findall(r"\w[\w+#.\-]*", seg.lower())
-        words = [w.strip(".-") for w in words]
-        words = [w for w in words if w]
-        if not words:
-            continue
-        if len(words) <= 4:
-            cands = [words]
-        else:
-            cands = [
-                words[i : i + n]
-                for n in (1, 2, 3)
-                for i in range(len(words) - n + 1)
-            ]
-        for c in cands:
-            if c[0] in STOP or c[-1] in STOP:
+        toks = re.findall(r"\w[\w+#.\-]*", seg)
+        toks = [t.strip(".-") for t in toks]
+        toks = [t for t in toks if t]
+        runs, cur = [], []
+        for i, t in enumerate(toks):
+            if t.lower() in STOP:
+                if cur:
+                    runs.append(cur)
+                cur = []
+            else:
+                cur.append((t, i))
+        if cur:
+            runs.append(cur)
+        for run in runs:
+            while run and run[0][0].lower() in GENERIC:
+                run = run[1:]
+            while run and run[-1][0].lower() in GENERIC:
+                run = run[:-1]
+            if not run:
                 continue
-            p = " ".join(c)
-            if len(p) < 2 or p.isdigit() or re.search(r"\d{4,}|@|http", p):
-                continue
-            found.append(p)
+            if len(run) == 1:
+                tok, idx = run[0]
+                technical = (
+                    any(c.isupper() for c in tok[1:])
+                    or bool(re.search(r"[+#_\d]", tok))
+                    or (tok[0].isupper() and idx > 0)
+                    or len(toks) == 1
+                )
+                if not technical:
+                    continue
+                cands = [[tok]]
+            elif len(run) <= 5:
+                cands = [[t for t, _ in run]]
+            else:
+                w = [t for t, _ in run]
+                cands = [w[i : i + 3] for i in range(len(w) - 2)]
+            for c in cands:
+                p = " ".join(c).lower()
+                if len(p) < 2 or re.match(r"^\d", p) or re.search(r"\d{4,}|@|http", p):
+                    continue
+                found.append(p)
     return list(dict.fromkeys(found))
 
 
-def top_keyphrases(text, model, top_n=20):
-    """KeyBERT-like: rank candidate phrases by similarity to the whole text,
+def top_keyphrases(text, model, top_n=25):
+    """Rank candidate phrases by similarity to the whole text (KeyBERT-like),
     then drop near-duplicates."""
     cands = extract_phrases(text)[:800]
     if not cands:
@@ -109,7 +151,7 @@ def doc_vec(text, model, size=60):
 # ---------- Phase 4 : Approach A (TF-IDF) vs Approach B (Transformers) ----------
 def run_analysis(cv_text, jd_text):
     model = load_model()
-    jd_skills = top_keyphrases(jd_text, model, 20)
+    jd_skills = top_keyphrases(jd_text, model, 25)
     cv_phrases = extract_phrases(cv_text)[:800]
     if not jd_skills or not cv_phrases:
         return None
